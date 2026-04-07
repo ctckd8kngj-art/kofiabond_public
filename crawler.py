@@ -72,38 +72,38 @@ def kofia(date: np.datetime64):
     df_average = df_average.reset_index()
     return df_average[["date","largeCategoryMrk","typeNmMrk","creditRnkMrk","sigaBrnCd"] + numeric_columns]
 
-    # 환경변수에서 날짜 읽기 (없으면 전일)
-    start_str = os.environ.get("START_DATE", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
-    end_str = os.environ.get("END_DATE", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
-    
-    date_range = pd.date_range(start=start_str, end=end_str, freq="D")
-    
-    df_list = []
-    for d in date_range:
-        date = np.datetime64(d.strftime("%Y-%m-%d"), "D")
-        df = kofia(date)
-        if not df.empty:
-            df_list.append(df)
-        else:
-            print(f"{d.strftime('%Y-%m-%d')} - 휴일 스킵")
-    
-    if not df_list:
-        print("데이터 없음")
-        import sys
-        sys.exit(0)
-    
-    df_final = pd.concat(df_list)
-    df_final.to_excel("kofia.xlsx", index=False)
-    
-    html_content = f"""
-    <html>
-    <head><meta charset="utf-8"></head>
-    <body>
-    {df_final.to_html(index=False, border=1)}
-    </body>
-    </html>
-    """
-    with open("kofia.html", "w", encoding="utf-8") as f:
-        f.write(html_content)
-    
-    print("완료!")
+# 환경변수에서 날짜 읽기 (없으면 전일)
+start_str = os.environ.get("START_DATE", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+end_str = os.environ.get("END_DATE", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+
+date_range = pd.date_range(start=start_str, end=end_str, freq="D")
+
+df_list = []
+for d in date_range:
+    date = np.datetime64(d.strftime("%Y-%m-%d"), "D")
+    df = kofia(date)
+    if not df.empty:
+        df_list.append(df)
+    else:
+        print(f"{d.strftime('%Y-%m-%d')} - 휴일 스킵")
+
+if not df_list:
+    print("데이터 없음")
+    import sys
+    sys.exit(0)
+
+df_final = pd.concat(df_list)
+df_final.to_excel("kofia.xlsx", index=False)
+
+html_content = f"""
+<html>
+<head><meta charset="utf-8"></head>
+<body>
+{df_final.to_html(index=False, border=1)}
+</body>
+</html>
+"""
+with open("kofia.html", "w", encoding="utf-8") as f:
+    f.write(html_content)
+
+print("완료!")

@@ -33,6 +33,9 @@ jobs:
           git add kofia.xlsx
           git commit -m "update: $(date +'%Y-%m-%d')" || echo "변경없음"
           git push
+          
+      - name: 날짜 설정
+        run: echo "TARGET_DATE=$(date -d 'yesterday' +'%Y-%m-%d')" >> $GITHUB_ENV
 
       - name: 메일 발송
         if: hashFiles('kofia.html') != ''
@@ -44,6 +47,6 @@ jobs:
           password: ${{ secrets.GMAIL_PASSWORD }}
           to: heeju.lee@meritz.co.kr
           from: ${{ secrets.GMAIL_USER }}
-          subject: "KOFIA 금리 데이터 ${{ github.run_id }}"
+          subject: "KOFIA 금리 데이터 ${{ env.TARGET_DATE }}"
           html_body: file://kofia.html
           attachments: kofia.xlsx

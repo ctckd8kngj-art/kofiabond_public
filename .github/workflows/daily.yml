@@ -26,10 +26,10 @@ jobs:
           cache: 'pip'
 
       - name: 이전 파일 삭제
-        run: rm -f kofia.html kofia.xlsx
+        run: rm -f crawler/kofia.html crawler/kofia.xlsx
 
       - name: 라이브러리 설치
-        run: pip install -r requirements.txt
+        run: pip install -r crawler/requirements.txt
 
       - name: 날짜 설정
         run: |
@@ -42,22 +42,22 @@ jobs:
           fi
 
       - name: 크롤링 실행
-        run: python crawler.py
+        run: python crawler/crawler.py
         env:
           START_DATE: ${{ env.START_DATE }}
           END_DATE: ${{ env.END_DATE }}
 
       - name: 결과 커밋
-        if: hashFiles('kofia.xlsx') != ''
+        if: hashFiles('crawler/kofia.xlsx') != ''
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add kofia.xlsx
+          git add crawler/kofia.xlsx
           git commit -m "update: ${{ env.START_DATE }} ~ ${{ env.END_DATE }}" || echo "변경없음"
           git push
 
       - name: 메일 발송
-        if: hashFiles('kofia.html') != ''
+        if: hashFiles('crawler/kofia.html') != ''
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: smtp.gmail.com
@@ -67,5 +67,5 @@ jobs:
           to: heeju.lee@meritz.co.kr
           from: ${{ secrets.GMAIL_USER }}
           subject: "KOFIA 금리 데이터 ${{ env.START_DATE }} ~ ${{ env.END_DATE }}"
-          html_body: file://kofia.html
-          attachments: kofia.xlsx
+          html_body: file://crawler/kofia.html
+          attachments: crawler/kofia.xlsx

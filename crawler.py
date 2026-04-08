@@ -93,17 +93,14 @@ if not df_list:
     sys.exit(0)
 
 df_final = pd.concat(df_list)
-df_final.to_excel("kofia.xlsx", index=False)
 
-html_content = f"""
-<html>
-<head><meta charset="utf-8"></head>
-<body>
-{df_final.to_html(index=False, border=1)}
-</body>
-</html>
-"""
-with open("kofia.html", "w", encoding="utf-8") as f:
+# 스크립트 위치 기준 경로
+script_dir = os.path.dirname(os.path.abspath(__file__))
+
+df_final.to_excel(os.path.join(script_dir, "kofia.xlsx"), index=False)
+
+html_content = f"""..."""  # 기존과 동일
+with open(os.path.join(script_dir, "kofia.html"), "w", encoding="utf-8") as f:
     f.write(html_content)
 
 print("완료!")

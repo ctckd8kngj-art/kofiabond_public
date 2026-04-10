@@ -167,19 +167,32 @@ def download_attachments(attachments: list[dict]) -> list[dict]:
                 results.append({"name": att["name"], "data": None, "skipped": True, "size_mb": size_mb})
                 continue
 
-            # Content-Disposition에서 실제 파일명 추출 시도
+            # Content-Disposition에서 실제 파일명 추출 및 디코딩
+            from urllib.parse import unquote
             cd = resp.headers.get("Content-Disposition", "")
-            fname = att["name"]
-            if "filename" in cd:
-                for part in cd.split(";"):
-                    part = part.strip()
-                    if part.lower().startswith("filename"):
-                        fname = part.split("=", 1)[-1].strip().strip('"\'')
-                        try:
-                            fname = fname.encode("latin-1").decode("utf-8")
-                        except Exception:
-                            pass
-                        break
+            fname = att["name"]  # fallback: 게시글에서 수집한 이름
+            if cd:
+                print(f"    [CD] {cd}")  # 디버그용
+                # RFC 5987: filename*=UTF-8''%EC%9D%B4%EB%A6%84.hwp
+                import re as _re
+                m = _re.search(r"filename\*\s*=\s*[Uu][Tt][Ff]-8''([^\s;]+)", cd)
+                if m:
+                    fname = unquote(m.group(1), encoding="utf-8")
+                else:
+                    # 일반 filename= 추출 (세미콜론/공백으로 끝나는 값)
+                    m2 = _re.search(r'filename\s*=\s*"?([^";\n]+)"?', cd)
+                    if m2:
+                        raw = m2.group(1).strip().strip('"')
+                        if "%" in raw:
+                            try:
+                                fname = unquote(raw, encoding="utf-8")
+                            except Exception:
+                                fname = raw
+                        else:
+                            try:
+                                fname = raw.encode("latin-1").decode("utf-8")
+                            except Exception:
+                                fname = raw
 
             print(f"    [DOWN] {fname} ({size_mb:.1f}MB)")
             results.append({"name": fname, "data": resp.content, "skipped": False})

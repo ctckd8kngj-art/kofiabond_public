@@ -76,10 +76,6 @@ def fetch_kofia(date: str) -> pd.DataFrame:
 
 
 def main():
-    if os.path.exists(CSV_PATH):
-        print("[backfill] CSV 이미 존재 — 스킵")
-        return
-
     print("[backfill] CSV 없음 — 과거 1년치 수집 시작")
     KST = timezone(timedelta(hours=9))
     end   = datetime.now(KST).replace(tzinfo=None) - timedelta(days=1)

@@ -1,0 +1,56 @@
+name: Daily Analysis
+on:
+  workflow_run:
+    workflows: ["Daily Crawl"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Daily Crawl 성공 여부 확인
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" && \
+                "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+            echo "Daily Crawl 실패 — 분석 스킵"
+            exit 0
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 라이브러리 설치
+        run: pip install -r analysis/requirements.txt
+
+      - name: 백필 (최초 1회만 — CSV 없을 때)
+        run: |
+          if [ ! -f analysis/data/kofia_history.csv ]; then
+            echo "CSV 없음 — 백필 시작"
+            python analysis/backfill.py
+          else
+            echo "CSV 존재 — 백필 스킵"
+          fi
+
+      - name: 백필 결과 커밋 (CSV 새로 생성된 경우)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add analysis/data/kofia_history.csv || true
+          git commit -m "backfill: 초기 1년치 데이터" || echo "변경없음"
+          git push
+
+      - name: 분석 + 메일 발송
+        run: python analysis/main.py
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GMAIL_USER:     ${{ secrets.GMAIL_USER }}
+          GMAIL_PASSWORD: ${{ secrets.GMAIL_PASSWORD }}
+          MAIL_TO:        ${{ secrets.MAIL_TO }}

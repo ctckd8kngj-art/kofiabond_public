@@ -1,7 +1,7 @@
 name: Daily Crawl
 on:
   schedule:
-    - cron: '0 20 * * *'
+    - cron: '0 20 * * 0-4'   # UTC 일~목 = KST 월~금 05:00
   workflow_dispatch:
     inputs:
       start_date:
@@ -29,32 +29,39 @@ jobs:
         run: rm -f crawler/kofia.html crawler/kofia.xlsx
 
       - name: 라이브러리 설치
-        run: pip install -r crawler/requirements.txt
+        run: |
+          pip install -r crawler/requirements.txt
+          pip install -r analysis/requirements.txt
 
       - name: 날짜 설정
         run: |
           if [ -n "${{ github.event.inputs.start_date }}" ]; then
             echo "START_DATE=${{ github.event.inputs.start_date }}" >> $GITHUB_ENV
-            echo "END_DATE=${{ github.event.inputs.end_date }}" >> $GITHUB_ENV
+            echo "END_DATE=${{ github.event.inputs.end_date }}"   >> $GITHUB_ENV
           else
             echo "START_DATE=$(TZ='Asia/Seoul' date -d 'yesterday' +'%Y-%m-%d')" >> $GITHUB_ENV
-            echo "END_DATE=$(TZ='Asia/Seoul' date -d 'yesterday' +'%Y-%m-%d')" >> $GITHUB_ENV
+            echo "END_DATE=$(TZ='Asia/Seoul' date -d 'yesterday' +'%Y-%m-%d')"   >> $GITHUB_ENV
           fi
 
       - name: 크롤링 실행
         run: python crawler/crawler.py
         env:
           START_DATE: ${{ env.START_DATE }}
-          END_DATE: ${{ env.END_DATE }}
+          END_DATE:   ${{ env.END_DATE }}
+
+      # ── 추가된 스텝 ──────────────────────────────────────
+      - name: CSV 업데이트
+        if: hashFiles('crawler/kofia.xlsx') != ''
+        run: python analysis/build_csv.py
 
       - name: 결과 커밋
-        if: hashFiles('crawler/kofia.xlsx') != ''
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add crawler/kofia.xlsx
+          git add crawler/kofia.xlsx analysis/data/kofia_history.csv || true
           git commit -m "update: ${{ env.START_DATE }} ~ ${{ env.END_DATE }}" || echo "변경없음"
           git push
+      # ─────────────────────────────────────────────────────
 
       - name: 메일 발송
         if: hashFiles('crawler/kofia.html') != ''

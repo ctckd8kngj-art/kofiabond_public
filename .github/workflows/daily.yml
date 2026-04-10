@@ -1,7 +1,7 @@
 name: Daily Crawl
 on:
   schedule:
-    - cron: '0 20 * * 0-4'   # UTC 일~목 = KST 월~금 05:00
+    - cron: '0 20 * * 1-5'   # UTC 일~목 = KST 월~금 05:00
   workflow_dispatch:
     inputs:
       start_date:

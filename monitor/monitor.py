@@ -172,7 +172,7 @@ def download_attachments(attachments: list[dict]) -> list[dict]:
             cd = resp.headers.get("Content-Disposition", "")
             fname = att["name"]  # fallback: 게시글에서 수집한 이름
             if cd:
-                print(f"    [CD] {cd}")  # 디버그용
+                print(f"    [CD] {cd}")
                 # RFC 5987: filename*=UTF-8''%EC%9D%B4%EB%A6%84.hwp
                 import re as _re
                 m = _re.search(r"filename\*\s*=\s*[Uu][Tt][Ff]-8''([^\s;]+)", cd)
@@ -273,10 +273,11 @@ def _render_body_block(body: str, attachments: list[dict], downloaded: list[dict
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
         )
+        escaped_br = escaped.replace('\n', '<br>')
         body_html = f"""
         <div style="background:#f9fafb;border-radius:6px;padding:12px 14px;
-                    font-size:12px;color:#374151;line-height:1.7;white-space:pre-wrap;
-                    margin-top:8px">{escaped}</div>"""
+                    font-size:12px;color:#374151;line-height:1.7;
+                    margin-top:8px">{escaped_br}</div>"""
 
     att_html = ""
     if attachments:

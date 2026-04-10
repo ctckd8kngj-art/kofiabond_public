@@ -30,13 +30,20 @@ jobs:
       - name: 라이브러리 설치
         run: pip install -r analysis/requirements.txt
 
-      - name: 백필 (최초 1회만 — CSV 없을 때)
+      - name: 백필 (최초 1회만 — CSV 없거나 데이터 부족할 때)
         run: |
           if [ ! -f analysis/data/kofia_history.csv ]; then
             echo "CSV 없음 — 백필 시작"
             python analysis/backfill.py
           else
-            echo "CSV 존재 — 백필 스킵"
+            ROWS=$(tail -n +2 analysis/data/kofia_history.csv | wc -l)
+            echo "CSV 행 수: $ROWS"
+            if [ "$ROWS" -lt 100 ]; then
+              echo "데이터 부족 — 백필 시작"
+              python analysis/backfill.py
+            else
+              echo "CSV 충분 — 백필 스킵"
+            fi
           fi
 
       - name: 백필 결과 커밋 (CSV 새로 생성된 경우)

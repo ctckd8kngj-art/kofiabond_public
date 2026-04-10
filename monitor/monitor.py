@@ -294,7 +294,7 @@ def _render_body_block(body: str, attachments: list[dict], downloaded: list[dict
         att_html = f"""
         <div style="margin-top:8px">
           <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:4px">
-            첨부파일 (메일에 직접 첨부됨)
+            첨부파일
           </div>
           <ul style="margin:0;padding-left:18px;font-size:12px">{items}</ul>
         </div>"""

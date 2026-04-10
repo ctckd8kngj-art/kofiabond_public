@@ -2,7 +2,7 @@
 FSS 금융감독원 페이지 모니터링 스크립트
 - 게시판 목록 ×2: 새 게시글 / 제목 변경 감지
 - 특정 게시글: 제목 변경 / 첨부파일 변경 감지
-- 변경 감지 시 본문 + 첨부파일 목록 포함하여 이메일 발송
+- 변경 감지 시 본문 + 첨부파일 실제 첨부하여 이메일 발송
 """
 
 import json
@@ -10,6 +10,7 @@ import os
 import smtplib
 import time
 from datetime import datetime
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -21,31 +22,31 @@ from bs4 import BeautifulSoup
 
 LISTS = [
     {
-        "key":    "list_B0000318",
-        "label":  "감독원장 제공자료",
-        "url":    "https://www.fss.or.kr/fss/bbs/B0000318/list.do?menuNo=200760",
-        "menu":   "200760",
-        "bbs":    "B0000318",
+        "key":   "list_B0000318",
+        "label": "지급여력제도 및 감독회계",
+        "url":   "https://www.fss.or.kr/fss/bbs/B0000318/list.do?menuNo=200760",
+        "menu":  "200760",
+        "bbs":   "B0000318",
     },
     {
-        "key":    "list_B0000123",
-        "label":  "업무자료",
-        "url":    "https://www.fss.or.kr/fss/bbs/B0000123/list.do?menuNo=200424",
-        "menu":   "200424",
-        "bbs":    "B0000123",
+        "key":   "list_B0000123",
+        "label": "보험업감독업무시행세칙",
+        "url":   "https://www.fss.or.kr/fss/bbs/B0000123/list.do?menuNo=200424",
+        "menu":  "200424",
+        "bbs":   "B0000123",
     },
 ]
 
 VIEWS = [
     {
         "key":   "view_210264",
-        "label": "IFRS17 및 K-ICS 할인율 정보 산출결과",
+        "label": "감독원장 제공자료 (nttId=210264)",
         "url":   "https://www.fss.or.kr/fss/bbs/B0000318/view.do?nttId=210264&menuNo=200760&pageIndex=1",
     },
 ]
 
-# state.json은 스크립트와 같은 디렉토리에 위치
-STATE_FILE = Path(__file__).parent / "state.json"
+STATE_FILE  = Path(__file__).parent / "state.json"
+MAX_ATT_MB  = 10   # 첨부파일 1개당 최대 크기 (MB)
 
 HEADERS = {
     "User-Agent": (
@@ -94,45 +95,102 @@ def scrape_list(soup: BeautifulSoup) -> list[dict]:
 
 
 def scrape_view(soup: BeautifulSoup) -> dict:
-    """게시글 상세 → {title, body, attachments}"""
+    """게시글 상세 → {title, body, attachments}
+    attachments: [{name, url}]
+    """
     # 제목
     title_el = soup.select_one(".view_title, .bbs_view_title, h4.tit, .subject")
     title    = title_el.get_text(strip=True) if title_el else ""
 
     # 본문
     body_el = soup.select_one(
-        ".bbs_view_con, .view_con, .board_view_content, .cont, #bbs_detail_content"
+        ".dbdata, .bbs_view_con, .view_con, .board_view_content, .cont, #bbs_detail_content"
     )
     body = body_el.get_text(separator="\n", strip=True) if body_el else ""
     if len(body) > 1500:
         body = body[:1500] + "\n\n[...본문 생략, 전체 내용은 원문 링크 참조]"
 
-    # 첨부파일
+    # 첨부파일: 이름 + 다운로드 URL 함께 수집
     files = []
-    for a in soup.select(".file_list a, .file_wrap a, ul.atchFile a, .atch_file a"):
-        name = a.get_text(strip=True)
-        if name:
-            files.append(name)
-    if not files:
-        for a in soup.select("a[href*='atchFileNo'], a[href*='fileDown']"):
-            name = a.get_text(strip=True)
-            if name:
-                files.append(name)
+    base  = "https://www.fss.or.kr"
 
-    return {"title": title, "body": body, "attachments": sorted(files)}
+    selectors = [
+        ".file_list a", ".file_wrap a",
+        "ul.atchFile a", ".atch_file a",
+        "a[href*='fileDown']", "a[href*='atchFileNo']",
+    ]
+    seen_urls = set()
+    for sel in selectors:
+        for a in soup.select(sel):
+            name = a.get_text(strip=True)
+            href = a.get("href", "")
+            if not name or not href:
+                continue
+            full_url = href if href.startswith("http") else base + href
+            if full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+            files.append({"name": name, "url": full_url})
+
+    return {"title": title, "body": body, "attachments": files}
+
+
+def download_attachments(attachments: list[dict]) -> list[dict]:
+    """첨부파일 다운로드 → [{name, data(bytes)}]
+    MAX_ATT_MB 초과 파일은 건너뜀
+    """
+    results = []
+    for att in attachments:
+        try:
+            time.sleep(0.3)
+            resp = requests.get(att["url"], headers=HEADERS, timeout=30)
+            resp.raise_for_status()
+
+            size_mb = len(resp.content) / (1024 * 1024)
+            if size_mb > MAX_ATT_MB:
+                print(f"    [SKIP] {att['name']} ({size_mb:.1f}MB > {MAX_ATT_MB}MB 제한)")
+                results.append({"name": att["name"], "data": None, "skipped": True, "size_mb": size_mb})
+                continue
+
+            # Content-Disposition에서 실제 파일명 추출 시도
+            cd = resp.headers.get("Content-Disposition", "")
+            fname = att["name"]
+            if "filename" in cd:
+                for part in cd.split(";"):
+                    part = part.strip()
+                    if part.lower().startswith("filename"):
+                        fname = part.split("=", 1)[-1].strip().strip('"\'')
+                        try:
+                            fname = fname.encode("latin-1").decode("utf-8")
+                        except Exception:
+                            pass
+                        break
+
+            print(f"    [DOWN] {fname} ({size_mb:.1f}MB)")
+            results.append({"name": fname, "data": resp.content, "skipped": False})
+
+        except Exception as e:
+            print(f"    [WARN] 다운로드 실패 ({att['name']}): {e}")
+            results.append({"name": att["name"], "data": None, "skipped": True, "size_mb": 0})
+
+    return results
 
 
 def fetch_post_detail(ntt_id: str, bbs: str, menu: str) -> dict:
-    """게시글 상세 페이지 fetch → {body, attachments, url}"""
+    """게시글 상세 fetch → {body, attachments(name+url), url}"""
     url = (
         f"https://www.fss.or.kr/fss/bbs/{bbs}/view.do"
         f"?nttId={ntt_id}&menuNo={menu}&pageIndex=1"
     )
     try:
-        time.sleep(0.5)  # 서버 부하 방지
+        time.sleep(0.5)
         soup   = fetch_soup(url)
         detail = scrape_view(soup)
-        return {"body": detail["body"], "attachments": detail["attachments"], "url": url}
+        return {
+            "body":        detail["body"],
+            "attachments": detail["attachments"],
+            "url":         url,
+        }
     except Exception as e:
         print(f"    [WARN] 상세 fetch 실패 ({ntt_id}): {e}")
         return {"body": "", "attachments": [], "url": url}
@@ -156,11 +214,6 @@ def save_state(state: dict):
 
 
 def migrate_state(state: dict) -> dict:
-    """
-    이전 state 포맷(list_ntt_ids: [str], view: {...}) 을
-    새 포맷(list_B0000318: [{nttId,title,date}], view_210264: {...}) 으로 변환
-    """
-    # 목록: list_ntt_ids → list_B0000318 (제목/날짜 없이 id만 보존)
     if "list_ntt_ids" in state and "list_B0000318" not in state:
         state["list_B0000318"] = [
             {"nttId": nid, "title": "", "date": ""}
@@ -168,7 +221,6 @@ def migrate_state(state: dict) -> dict:
         ]
         print("[MIGRATE] list_ntt_ids → list_B0000318 변환 완료")
 
-    # 상세: view → view_210264
     if "view" in state and "view_210264" not in state:
         state["view_210264"] = {
             "title":       state["view"].get("title", ""),
@@ -182,8 +234,10 @@ def migrate_state(state: dict) -> dict:
 
 # ── 이메일 빌더 ───────────────────────────────────────────────────────────────
 
-def _render_body_block(body: str, attachments: list[str]) -> str:
-    """본문 텍스트 + 첨부파일 목록 HTML 블록"""
+def _render_body_block(body: str, attachments: list[dict], downloaded: list[dict]) -> str:
+    """본문 텍스트 + 첨부파일 목록 HTML 블록
+    attachments: [{name, url}]  downloaded: [{name, data, skipped}]
+    """
     body_html = ""
     if body:
         escaped = (
@@ -194,17 +248,25 @@ def _render_body_block(body: str, attachments: list[str]) -> str:
         body_html = f"""
         <div style="background:#f9fafb;border-radius:6px;padding:12px 14px;
                     font-size:12px;color:#374151;line-height:1.7;white-space:pre-wrap;
-                    margin-top:8px;max-height:300px;overflow-y:auto">{escaped}</div>"""
+                    margin-top:8px">{escaped}</div>"""
 
     att_html = ""
     if attachments:
-        items = "".join(
-            f'<li style="margin:3px 0;color:#4b5563">📎 {f}</li>'
-            for f in attachments
-        )
+        skipped_names = {d["name"] for d in downloaded if d.get("skipped")}
+        items = ""
+        for att in attachments:
+            is_skip = att["name"] in skipped_names
+            suffix  = f' <span style="color:#ef4444;font-size:11px">(용량 초과 - 링크만 제공)</span>' if is_skip else ""
+            items += (
+                f'<li style="margin:3px 0;color:#4b5563">'
+                f'📎 <a href="{att["url"]}" style="color:#1a56db">{att["name"]}</a>{suffix}'
+                f'</li>'
+            )
         att_html = f"""
         <div style="margin-top:8px">
-          <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:4px">첨부파일</div>
+          <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:4px">
+            첨부파일 (메일에 직접 첨부됨)
+          </div>
           <ul style="margin:0;padding-left:18px;font-size:12px">{items}</ul>
         </div>"""
 
@@ -220,7 +282,9 @@ def _section_new_posts(board_changes: list[dict]) -> str:
         post_blocks = ""
 
         for p in bc.get("new_posts", []):
-            detail = _render_body_block(p.get("body", ""), p.get("attachments", []))
+            detail = _render_body_block(
+                p.get("body", ""), p.get("attachments", []), p.get("downloaded", [])
+            )
             post_blocks += f"""
             <div style="border:1px solid #dbeafe;border-radius:6px;
                         padding:12px 14px;margin-bottom:10px">
@@ -238,7 +302,9 @@ def _section_new_posts(board_changes: list[dict]) -> str:
             </div>"""
 
         for p in bc.get("modified_posts", []):
-            detail = _render_body_block(p.get("body", ""), p.get("attachments", []))
+            detail = _render_body_block(
+                p.get("body", ""), p.get("attachments", []), p.get("downloaded", [])
+            )
             post_blocks += f"""
             <div style="border:1px solid #fde68a;border-radius:6px;
                         padding:12px 14px;margin-bottom:10px">
@@ -293,7 +359,9 @@ def _section_view_changes(view_changes: list[dict]) -> str:
                          font-size:13px;line-height:1.7">{item['detail']}</td>
             </tr>"""
 
-        body_block = _render_body_block(vc.get("body", ""), vc.get("attachments", []))
+        body_block = _render_body_block(
+            vc.get("body", ""), vc.get("attachments", []), vc.get("downloaded", [])
+        )
 
         change_blocks += f"""
         <div style="margin-bottom:20px">
@@ -349,7 +417,7 @@ def build_html(board_changes: list[dict], view_changes: list[dict]) -> str:
 
 # ── 이메일 발송 ───────────────────────────────────────────────────────────────
 
-def send_email(subject: str, body_html: str):
+def send_email(subject: str, body_html: str, all_downloaded: list[dict]):
     mail_to   = os.environ.get("MAIL_TO", "")
     smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
     smtp_port = int(os.environ.get("SMTP_PORT", "587"))
@@ -360,18 +428,40 @@ def send_email(subject: str, body_html: str):
         print("[WARN] 메일 환경변수가 설정되지 않아 이메일을 건너뜁니다.")
         return
 
-    msg = MIMEMultipart("alternative")
+    # mixed: HTML 본문 + 파일 첨부를 함께 담을 수 있는 타입
+    msg = MIMEMultipart("mixed")
     msg["Subject"] = subject
     msg["From"]    = smtp_user
     msg["To"]      = mail_to
+
+    # HTML 본문
     msg.attach(MIMEText(body_html, "html", "utf-8"))
+
+    # 실제 파일 첨부
+    attached_count = 0
+    for f in all_downloaded:
+        if f.get("data") is None:
+            continue
+        part = MIMEApplication(f["data"])
+        # 파일명 인코딩 (한글 대응)
+        try:
+            fname_encoded = f["name"].encode("utf-8").decode("ascii")
+        except Exception:
+            from email.header import Header
+            fname_encoded = Header(f["name"], "utf-8").encode()
+        part.add_header(
+            "Content-Disposition", "attachment",
+            filename=("utf-8", "", f["name"])
+        )
+        msg.attach(part)
+        attached_count += 1
 
     with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.ehlo()
         server.starttls()
         server.login(smtp_user, smtp_pass)
         server.sendmail(smtp_user, mail_to, msg.as_string())
-    print(f"[OK] 이메일 발송 완료 → {mail_to}")
+    print(f"[OK] 이메일 발송 완료 → {mail_to} (첨부파일 {attached_count}개)")
 
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
@@ -379,8 +469,9 @@ def send_email(subject: str, body_html: str):
 def main():
     state = migrate_state(load_state())
 
-    board_changes: list[dict] = []
-    view_changes:  list[dict] = []
+    board_changes:  list[dict] = []
+    view_changes:   list[dict] = []
+    all_downloaded: list[dict] = []   # 메일 첨부용 전체 수집
 
     # ① 게시판 목록 모니터링
     for board in LISTS:
@@ -391,7 +482,6 @@ def main():
             print(f"  → 파싱된 게시글 수: {len(posts)}")
 
             prev_list = state.get(board["key"], [])
-            # 마이그레이션 후 title이 빈 경우 제목 비교 스킵을 위해 플래그
             is_first  = not prev_list
             prev_map  = {p["nttId"]: p for p in prev_list}
             curr_map  = {p["nttId"]: p for p in posts}
@@ -403,19 +493,23 @@ def main():
                 for ntt_id, post in curr_map.items():
                     if ntt_id not in prev_map:
                         print(f"  [NEW] {post['title']}")
-                        detail = fetch_post_detail(ntt_id, board["bbs"], board["menu"])
-                        new_posts.append({**post, **detail})
+                        detail     = fetch_post_detail(ntt_id, board["bbs"], board["menu"])
+                        downloaded = download_attachments(detail["attachments"])
+                        all_downloaded.extend(downloaded)
+                        new_posts.append({**post, **detail, "downloaded": downloaded})
 
                     elif (
-                        prev_map[ntt_id]["title"]  # 마이그레이션으로 title이 빈 경우 스킵
+                        prev_map[ntt_id]["title"]
                         and post["title"] != prev_map[ntt_id]["title"]
                     ):
                         print(f"  [MOD] {prev_map[ntt_id]['title']} → {post['title']}")
-                        detail = fetch_post_detail(ntt_id, board["bbs"], board["menu"])
+                        detail     = fetch_post_detail(ntt_id, board["bbs"], board["menu"])
+                        downloaded = download_attachments(detail["attachments"])
+                        all_downloaded.extend(downloaded)
                         mod_posts.append({
-                            **post,
-                            **detail,
+                            **post, **detail,
                             "prev_title": prev_map[ntt_id]["title"],
+                            "downloaded": downloaded,
                         })
             else:
                 print("  첫 실행 - 기준값 저장")
@@ -446,7 +540,7 @@ def main():
             items = []
 
             print(f"  제목: {curr['title']}")
-            print(f"  첨부: {curr['attachments']}")
+            print(f"  첨부: {[a['name'] for a in curr['attachments']]}")
 
             if prev:
                 if curr["title"] != prev.get("title", ""):
@@ -458,10 +552,11 @@ def main():
                         ),
                     })
 
-                prev_att = set(prev.get("attachments", []))
-                curr_att = set(curr["attachments"])
-                added    = curr_att - prev_att
-                removed  = prev_att - curr_att
+                # 첨부파일 비교는 이름 기준
+                prev_names = set(prev.get("attachments", []))
+                curr_names = {a["name"] for a in curr["attachments"]}
+                added      = curr_names - prev_names
+                removed    = prev_names - curr_names
 
                 if added:
                     items.append({
@@ -477,18 +572,22 @@ def main():
                 print("  첫 실행 - 기준값 저장")
 
             if items:
+                # 변경된 경우에만 첨부파일 다운로드
+                downloaded = download_attachments(curr["attachments"])
+                all_downloaded.extend(downloaded)
                 view_changes.append({
                     "label":       view["label"],
                     "url":         view["url"],
                     "items":       items,
                     "body":        curr["body"],
                     "attachments": curr["attachments"],
+                    "downloaded":  downloaded,
                 })
 
-            # body는 state에 저장 안 함 (용량 절약)
+            # state에는 첨부파일 이름만 저장
             state[view["key"]] = {
                 "title":       curr["title"],
-                "attachments": curr["attachments"],
+                "attachments": [a["name"] for a in curr["attachments"]],
             }
 
         except Exception as e:
@@ -511,8 +610,9 @@ def main():
         subject = f"📋 [FSS 모니터링] {' · '.join(parts)}"
 
         print(f"\n변경 사항 발견 → 이메일 발송: {subject}")
+        print(f"  첨부파일 총 {len([d for d in all_downloaded if d.get('data')])}개")
         html = build_html(board_changes, view_changes)
-        send_email(subject, html)
+        send_email(subject, html, all_downloaded)
     else:
         print("\n변경 사항 없음. 이메일 발송 안 함.")
 
